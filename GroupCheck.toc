@@ -1,0 +1,6 @@
+## Interface: 120000
+## Title: GroupCheck
+## Notes: Posts group utility summary when a 5-man party becomes full.
+## Author: run3
+## Version: 0.1.0
+GroupCheck.lua
