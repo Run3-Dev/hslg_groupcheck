@@ -1,9 +1,9 @@
 -- GroupCheck.lua (Retail 12.0+)
 -- Posts a formatted party/instance summary when a NEW member joins the party.
 -- Only posts automatically if YOU are the party leader.
--- Includes a settings UI (Settings -> AddOns -> HSLG GroupCheck).
+-- Includes a settings UI (Settings -> AddOns -> M+ GroupCheck).
 -- Slash commands:
---   /gc check   -> manual output (local preview)
+--   /gc check   -> manual output (local preview; works solo)
 --   /gc config  -> opens settings panel
 
 local ADDON = ...
@@ -47,9 +47,9 @@ local HERO_CLASSES = {
 }
 
 -- State
-local knownGUIDs = {}     -- set of GUIDs currently in group
-local initialized = false -- prevents posting on first roster scan after login/reload
-local lastPostAt = 0      -- basic anti-spam throttle (seconds)
+local knownGUIDs = {}
+local initialized = false
+local lastPostAt = 0
 
 -- Stored settings category ID (for Settings.OpenToCategory)
 GroupCheckSettingsCategoryID = nil
@@ -85,11 +85,9 @@ local function AnalyzeGroup()
     end
   end
 
-  -- 5-man party: player + party1..party4
   addUnit("player")
   for i = 1, 4 do addUnit("party" .. i) end
 
-  -- Build stacking summary
   local stackedParts = {}
   for classTag, count in pairs(classCount) do
     if count > 1 then
@@ -109,34 +107,30 @@ local function AnalyzeGroup()
   return brCount, hasHero, stackingText
 end
 
--- Feature 2: critical missing warnings
 local function GetMissingWarnings(brCount, hasHero)
   local missing = {}
-
-  if brCount == 0 then
-    table.insert(missing, "BattleRes")
-  end
-
-  if not hasHero then
-    table.insert(missing, "Bloodlust")
-  end
-
+  if brCount == 0 then table.insert(missing, "BattleRes") end
+  if not hasHero then table.insert(missing, "Bloodlust") end
   return missing
 end
+
+-- "WoW-ish" symbol that is safe in chat (no pipe escapes)
+local WARNING_PREFIX = "[!]"
 
 local function BuildSummaryLines(brCount, hasHero, stackingText)
   local lines = {}
 
   if GroupCheckDB.showHeader then
-    table.insert(lines, "HSLG GroupCheck")
+    table.insert(lines, "M+ GroupCheck")
   end
 
-  if GroupCheckDB.checkBR then
+  -- Only show "available" lines if the thing is actually available
+  if GroupCheckDB.checkBR and brCount > 0 then
     table.insert(lines, string.format("Available BattleRes: %d", brCount))
   end
 
-  if GroupCheckDB.checkHT then
-    table.insert(lines, string.format("Available Bloodlust: %s", hasHero and "yes" or "no"))
+  if GroupCheckDB.checkHT and hasHero then
+    table.insert(lines, "Available Bloodlust: yes")
   end
 
   if GroupCheckDB.checkStacking then
@@ -146,66 +140,66 @@ local function BuildSummaryLines(brCount, hasHero, stackingText)
   return lines
 end
 
--- mode: "AUTO" (chat output, leader-only check happens in caller) or "LOCAL" (prints locally)
 local function PostSummary(mode)
   mode = mode or "AUTO"
 
   if not GroupCheckDB.enabled then
-    if mode == "LOCAL" then
-      PrintLocal("Addon is disabled in settings (Enable addon).")
-    end
+    if mode == "LOCAL" then PrintLocal("Addon is disabled in settings (Enable addon).") end
     return
   end
 
+  -- SOLO support (LOCAL only) - you said you already added this and it works.
   if not IsInGroup() then
     if mode == "LOCAL" then
-      PrintLocal("You are not in a group.")
+      local brCount, hasHero, stackingText = AnalyzeGroup()
+      local missing = GetMissingWarnings(brCount, hasHero)
+
+      PrintLocal("Solo check:")
+      if #missing > 0 then
+        PrintLocal("WARNING: Missing " .. table.concat(missing, ", "))
+      end
+
+      local lines = BuildSummaryLines(brCount, hasHero, stackingText)
+      if #lines == 0 then
+        PrintLocal("Nothing to output (all lines disabled or nothing available).")
+        return
+      end
+      for _, l in ipairs(lines) do PrintLocal(l) end
     end
     return
   end
 
   if IsInRaid() then
-    if mode == "LOCAL" then
-      PrintLocal("You are in a raid. This addon is party-only right now.")
-    end
+    if mode == "LOCAL" then PrintLocal("You are in a raid. This addon is party-only right now.") end
     return
   end
 
   local brCount, hasHero, stackingText = AnalyzeGroup()
+  local missing = GetMissingWarnings(brCount, hasHero)
 
   if mode == "LOCAL" then
-    local lines = BuildSummaryLines(brCount, hasHero, stackingText)
-    if #lines == 0 then
-      PrintLocal("Nothing to output (all lines disabled in settings).")
-      return
-    end
-
-    -- Show warnings locally too
-    local missing = GetMissingWarnings(brCount, hasHero)
     if #missing > 0 then
       PrintLocal("WARNING: Missing " .. table.concat(missing, ", "))
     end
 
-    for _, l in ipairs(lines) do
-      PrintLocal(l)
+    local lines = BuildSummaryLines(brCount, hasHero, stackingText)
+    if #lines == 0 then
+      PrintLocal("Nothing to output (all lines disabled or nothing available).")
+      return
     end
+    for _, l in ipairs(lines) do PrintLocal(l) end
     return
   end
 
-  -- AUTO (chat)
   local channel = GetOutputChannel()
 
-  -- Warnings first (only if something critical is missing)
-  local missing = GetMissingWarnings(brCount, hasHero)
   if #missing > 0 then
-    SendChatMessage("⚠ HSLG GroupCheck Warning", channel)
+    SendChatMessage(WARNING_PREFIX .. " M+ GroupCheck Warning", channel)
     SendChatMessage("Missing " .. table.concat(missing, ", "), channel)
   end
 
-  -- Then regular summary lines
   local lines = BuildSummaryLines(brCount, hasHero, stackingText)
   if #lines == 0 then return end
-
   for _, l in ipairs(lines) do
     SendChatMessage(l, channel)
   end
@@ -213,12 +207,9 @@ end
 
 local function BuildCurrentGUIDSet()
   local current = {}
-
-  -- player
   local pg = UnitGUID("player")
   if pg then current[pg] = true end
 
-  -- party1..party4
   for i = 1, 4 do
     local unit = "party" .. i
     if UnitExists(unit) then
@@ -261,7 +252,7 @@ local function CheckRosterAndMaybePost()
     return
   end
 
-  -- Only leader posts automatically; still keep state in sync so leader swap doesn't spam.
+  -- Only leader runs the auto logic at all (private pre-info + public full post)
   if not UnitIsGroupLeader("player") then
     knownGUIDs = currentGUIDs
     return
@@ -269,7 +260,16 @@ local function CheckRosterAndMaybePost()
 
   if HasNewMember(knownGUIDs, currentGUIDs) then
     lastPostAt = now
-    PostSummary("AUTO")
+
+    -- NEW BEHAVIOR:
+    -- - Before group is full: show info privately (local)
+    -- - When group becomes full (5): post to instance channel (fallback party)
+    local members = GetNumGroupMembers() -- in a party this includes the player
+    if members >= 5 then
+      PostSummary("AUTO")
+    else
+      PostSummary("LOCAL")
+    end
   end
 
   knownGUIDs = currentGUIDs
@@ -315,7 +315,7 @@ local function RegisterSettingsPanel()
 
   local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
   title:SetPoint("TOPLEFT", 16, -16)
-  title:SetText("HSLG GroupCheck")
+  title:SetText("M+ GroupCheck")
 
   local sub = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
   sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
@@ -323,19 +323,17 @@ local function RegisterSettingsPanel()
 
   local y = -60
   CreateCheckbox(panel, "Enable addon", "Master toggle for auto-posting and /gc check output.", "enabled", y); y = y - 28
-  CreateCheckbox(panel, "Show header", "Posts the header line 'HSLG GroupCheck'.", "showHeader", y); y = y - 28
-  CreateCheckbox(panel, "Check BR", "Includes 'Available BattleRes: {n}'.", "checkBR", y); y = y - 28
-  CreateCheckbox(panel, "Check HT", "Includes 'Available Bloodlust: {yes/no}'.", "checkHT", y); y = y - 28
+  CreateCheckbox(panel, "Show header", "Posts the header line 'M+ GroupCheck'.", "showHeader", y); y = y - 28
+  CreateCheckbox(panel, "Check BR", "Shows 'Available BattleRes' only when BR is present. Missing BR is reported via warning.", "checkBR", y); y = y - 28
+  CreateCheckbox(panel, "Check HT", "Shows 'Available Bloodlust' only when Bloodlust is present. Missing Bloodlust is reported via warning.", "checkHT", y); y = y - 28
   CreateCheckbox(panel, "Check Class stacking", "Includes 'Class stacking: {yes: ... / no}'.", "checkStacking", y); y = y - 28
 
   local hint = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
   hint:SetPoint("TOPLEFT", 16, y - 8)
   hint:SetText("Tip: /gc check shows a local preview. /gc config opens this panel.")
 
-  local category = Settings.RegisterCanvasLayoutCategory(panel, "HSLG GroupCheck")
+  local category = Settings.RegisterCanvasLayoutCategory(panel, "M+ GroupCheck")
   Settings.RegisterAddOnCategory(category)
-
-  -- Store ID so we can open it reliably (12.0+ expects an integer category ID)
   GroupCheckSettingsCategoryID = category:GetID()
 end
 
@@ -354,7 +352,6 @@ f:SetScript("OnEvent", function(_, event, arg1)
     return
   end
 
-  -- delay helps when GUID/class info isn’t ready yet
   C_Timer.After(0.2, CheckRosterAndMaybePost)
 end)
 
@@ -367,7 +364,6 @@ SlashCmdList["GROUPCHECK"] = function(msg)
   msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
 
   if msg == "check" then
-    -- Manual check: local preview (no leader requirement)
     PostSummary("LOCAL")
     return
   end
