@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+
+## [0.3.0] – 2026-01-30
+### Added
+- Private pre-check output while the group is still incomplete.
+- Automatic public posting to instance chat once the group becomes full (5/5).
+- Support for running `/gc check` while solo, showing a local preview of available utilities.
+- Clear warning output when critical utilities are missing (BattleRes, Bloodlust).
+
+### Changed
+- GroupCheck now distinguishes between private and public output:
+  - Before the group is full, results are shown locally only.
+  - Once the group is full, results are posted publicly to the instance chat.
+- Instance chat is preferred automatically in dungeon and Mythic+ groups.
+- Output lines for BattleRes and Bloodlust are only shown when the utility is actually available.
+- Addon branding updated to “M+ GroupCheck”.
+
+### Fixed
+- Chat errors caused by invalid escape sequences in warning messages.
+- Redundant output of unavailable utilities (e.g. “Available Bloodlust: no”).
+
 ## [0.2.0] – 2026-01-27
 ### Added
 - Configurable settings panel using the Retail 12.0+ Settings API.
