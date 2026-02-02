@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] – 2026-02-02
+### Added
+- Class suggestion system while building a Mythic+ group.
+- Local suggestions for missing core utilities:
+  - Bloodlust / Heroism
+  - Battle Resurrection
+- Priority logic when only one group slot remains:
+  - Bloodlust is suggested over BattleRes.
+  - If both are missing, only Bloodlust is suggested.
+- New option to enable or disable class suggestions in the settings panel.
+
+### Changed
+- Group formation feedback is now more proactive, providing guidance before the group is complete.
+- Suggestions are shown only locally and stop once the group reaches 5 players.
+- Final group check and warnings remain unchanged and are still posted publicly only when the group is complete.
 
 ## [0.3.0] – 2026-01-30
 ### Added

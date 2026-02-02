@@ -2,6 +2,6 @@
 ## Title: M+ GroupCheck
 ## Notes: Posts group utility summary when a 5-man party becomes full.
 ## Author: run3
-## Version: 0.2.0
+## Version: 0.4.0
 ## SavedVariables: GroupCheckDB
 GroupCheck.lua

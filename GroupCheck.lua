@@ -1,6 +1,6 @@
 -- GroupCheck.lua (Retail 12.0+)
 -- Posts a formatted party/instance summary when a NEW member joins the party.
--- Only posts automatically if YOU are the party leader.
+-- Only posts automatically if the player is the party leader.
 -- Includes a settings UI (Settings -> AddOns -> M+ GroupCheck).
 -- Slash commands:
 --   /gc check   -> manual output (local preview; works solo)
@@ -18,6 +18,7 @@ local DEFAULTS = {
   checkBR = true,
   checkHT = true,
   checkStacking = true,
+  showSuggestions = true,
 }
 
 local function ApplyDefaults()
@@ -29,41 +30,43 @@ local function ApplyDefaults()
   end
 end
 
--- Classes that provide a battle resurrection option (class-based pragmatic check)
--- TWW: Paladin has a battle res (Intercession) -> include PALADIN.
 local BATTLE_RES_CLASSES = {
   DRUID = true,
   DEATHKNIGHT = true,
-  WARLOCK = true, -- Soulstone counts as "we have a BR option" for most groups
+  WARLOCK = true,
   PALADIN = true, -- TWW (12.0+)
 }
 
--- Classes that can provide Heroism/Bloodlust (HT)
 local HERO_CLASSES = {
   SHAMAN = true,
   MAGE = true,
-  HUNTER = true,  -- via pet
+  HUNTER = true,
   EVOKER = true,
 }
 
--- State
+local SUGGESTED_HT_CLASSES = { "Mage", "Evoker", "Shaman", "Hunter" }
+local SUGGESTED_BR_CLASSES = { "Death Knight", "Druid", "Paladin", "Warlock" }
+
 local knownGUIDs = {}
 local initialized = false
 local lastPostAt = 0
 
--- Stored settings category ID (for Settings.OpenToCategory)
 GroupCheckSettingsCategoryID = nil
 
 local function PrintLocal(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff00ff88[GroupCheck]|r " .. tostring(msg))
 end
 
--- Feature 1: choose output channel (INSTANCE_CHAT in LFG/instance groups, otherwise PARTY)
 local function GetOutputChannel()
   if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then
     return "INSTANCE_CHAT"
   end
   return "PARTY"
+end
+
+local function GetRemainingSlots()
+  if not IsInGroup() then return 4 end
+  return 5 - GetNumGroupMembers()
 end
 
 local function AnalyzeGroup()
@@ -77,16 +80,20 @@ local function AnalyzeGroup()
     if not classTag then return end
 
     classCount[classTag] = (classCount[classTag] or 0) + 1
+
     if BATTLE_RES_CLASSES[classTag] then
       brCount = brCount + 1
     end
+
     if HERO_CLASSES[classTag] then
       hasHero = true
     end
   end
 
   addUnit("player")
-  for i = 1, 4 do addUnit("party" .. i) end
+  for i = 1, 4 do
+    addUnit("party" .. i)
+  end
 
   local stackedParts = {}
   for classTag, count in pairs(classCount) do
@@ -114,7 +121,6 @@ local function GetMissingWarnings(brCount, hasHero)
   return missing
 end
 
--- "WoW-ish" symbol that is safe in chat (no pipe escapes)
 local WARNING_PREFIX = "[!]"
 
 local function BuildSummaryLines(brCount, hasHero, stackingText)
@@ -124,7 +130,6 @@ local function BuildSummaryLines(brCount, hasHero, stackingText)
     table.insert(lines, "M+ GroupCheck")
   end
 
-  -- Only show "available" lines if the thing is actually available
   if GroupCheckDB.checkBR and brCount > 0 then
     table.insert(lines, string.format("Available BattleRes: %d", brCount))
   end
@@ -140,15 +145,49 @@ local function BuildSummaryLines(brCount, hasHero, stackingText)
   return lines
 end
 
+local function BuildSuggestions(brCount, hasHero)
+  if not GroupCheckDB.showSuggestions then
+    return {}
+  end
+
+  local suggestions = {}
+  local remainingSlots = GetRemainingSlots()
+  local needsHT = not hasHero
+  local needsBR = (brCount == 0)
+
+  if remainingSlots == 1 then
+    if needsHT then
+      table.insert(suggestions, { label = "Suggested class for Bloodlust", classes = SUGGESTED_HT_CLASSES })
+      return suggestions
+    end
+    if needsBR then
+      table.insert(suggestions, { label = "Suggested class for BattleRes", classes = SUGGESTED_BR_CLASSES })
+      return suggestions
+    end
+    return suggestions
+  end
+
+  if needsHT then
+    table.insert(suggestions, { label = "Suggested class for Bloodlust", classes = SUGGESTED_HT_CLASSES })
+  end
+
+  if needsBR then
+    table.insert(suggestions, { label = "Suggested class for BattleRes", classes = SUGGESTED_BR_CLASSES })
+  end
+
+  return suggestions
+end
+
 local function PostSummary(mode)
   mode = mode or "AUTO"
 
   if not GroupCheckDB.enabled then
-    if mode == "LOCAL" then PrintLocal("Addon is disabled in settings (Enable addon).") end
+    if mode == "LOCAL" then
+      PrintLocal("Addon is disabled in settings (Enable addon).")
+    end
     return
   end
 
-  -- SOLO support (LOCAL only) - you said you already added this and it works.
   if not IsInGroup() then
     if mode == "LOCAL" then
       local brCount, hasHero, stackingText = AnalyzeGroup()
@@ -164,13 +203,18 @@ local function PostSummary(mode)
         PrintLocal("Nothing to output (all lines disabled or nothing available).")
         return
       end
-      for _, l in ipairs(lines) do PrintLocal(l) end
+
+      for _, l in ipairs(lines) do
+        PrintLocal(l)
+      end
     end
     return
   end
 
   if IsInRaid() then
-    if mode == "LOCAL" then PrintLocal("You are in a raid. This addon is party-only right now.") end
+    if mode == "LOCAL" then
+      PrintLocal("In a raid. Party-only.")
+    end
     return
   end
 
@@ -180,6 +224,13 @@ local function PostSummary(mode)
   if mode == "LOCAL" then
     if #missing > 0 then
       PrintLocal("WARNING: Missing " .. table.concat(missing, ", "))
+    end
+
+    local suggestions = BuildSuggestions(brCount, hasHero)
+    if #suggestions > 0 and GetNumGroupMembers() < 5 then
+      for _, entry in ipairs(suggestions) do
+        PrintLocal(entry.label .. ": " .. table.concat(entry.classes, ", "))
+      end
     end
 
     local lines = BuildSummaryLines(brCount, hasHero, stackingText)
@@ -217,7 +268,6 @@ local function BuildCurrentGUIDSet()
       if g then current[g] = true end
     end
   end
-
   return current
 end
 
@@ -252,7 +302,6 @@ local function CheckRosterAndMaybePost()
     return
   end
 
-  -- Only leader runs the auto logic at all (private pre-info + public full post)
   if not UnitIsGroupLeader("player") then
     knownGUIDs = currentGUIDs
     return
@@ -261,10 +310,7 @@ local function CheckRosterAndMaybePost()
   if HasNewMember(knownGUIDs, currentGUIDs) then
     lastPostAt = now
 
-    -- NEW BEHAVIOR:
-    -- - Before group is full: show info privately (local)
-    -- - When group becomes full (5): post to instance channel (fallback party)
-    local members = GetNumGroupMembers() -- in a party this includes the player
+    local members = GetNumGroupMembers()
     if members >= 5 then
       PostSummary("AUTO")
     else
@@ -274,10 +320,6 @@ local function CheckRosterAndMaybePost()
 
   knownGUIDs = currentGUIDs
 end
-
--- -------------------------
--- Settings UI (12.0+)
--- -------------------------
 
 local function CreateCheckbox(parent, label, tooltip, key, y)
   local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
@@ -327,6 +369,7 @@ local function RegisterSettingsPanel()
   CreateCheckbox(panel, "Check BR", "Shows 'Available BattleRes' only when BR is present. Missing BR is reported via warning.", "checkBR", y); y = y - 28
   CreateCheckbox(panel, "Check HT", "Shows 'Available Bloodlust' only when Bloodlust is present. Missing Bloodlust is reported via warning.", "checkHT", y); y = y - 28
   CreateCheckbox(panel, "Check Class stacking", "Includes 'Class stacking: {yes: ... / no}'.", "checkStacking", y); y = y - 28
+  CreateCheckbox(panel, "Show suggestions", "Shows local suggestions for missing Bloodlust/BattleRes while building the group.", "showSuggestions", y); y = y - 28
 
   local hint = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
   hint:SetPoint("TOPLEFT", 16, y - 8)
@@ -336,10 +379,6 @@ local function RegisterSettingsPanel()
   Settings.RegisterAddOnCategory(category)
   GroupCheckSettingsCategoryID = category:GetID()
 end
-
--- -------------------------
--- Events
--- -------------------------
 
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -354,10 +393,6 @@ f:SetScript("OnEvent", function(_, event, arg1)
 
   C_Timer.After(0.2, CheckRosterAndMaybePost)
 end)
-
--- -------------------------
--- Slash command
--- -------------------------
 
 SLASH_GROUPCHECK1 = "/gc"
 SlashCmdList["GROUPCHECK"] = function(msg)
