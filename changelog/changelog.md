@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] – 2026-05-10
+### Added
+- Added a tooltip note for M+ spec ranking 
+- Specs will be updated in upcomming iterations 
+
+## [0.5.0] – 2026-04-12
+### Added
+- Added a warning if you enter a dungeon on mythic difficulty and have combatlog disabled
+- Added the option to disable/enable the check for combatlog
+
+
 ## [0.4.0] – 2026-02-02
 ### Added
 - Class suggestion system while building a Mythic+ group.

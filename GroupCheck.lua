@@ -19,6 +19,7 @@ local DEFAULTS = {
   checkHT = true,
   checkStacking = true,
   showSuggestions = true,
+  checkCombatLog = true,
 }
 
 local function ApplyDefaults()
@@ -50,6 +51,7 @@ local SUGGESTED_BR_CLASSES = { "Death Knight", "Druid", "Paladin", "Warlock" }
 local knownGUIDs = {}
 local initialized = false
 local lastPostAt = 0
+local warnedCombatLogForInstance = nil
 
 GroupCheckSettingsCategoryID = nil
 
@@ -176,6 +178,48 @@ local function BuildSuggestions(brCount, hasHero)
   end
 
   return suggestions
+end
+
+local function IsInMythicDungeon()
+  local _, instanceType, difficultyID, _, _, _, _, instanceMapID = GetInstanceInfo()
+
+  if instanceType ~= "party" then
+    return false, instanceMapID
+  end
+
+  if difficultyID == 8 or difficultyID == 23 then
+    return true, instanceMapID
+  end
+
+  return false, instanceMapID
+end
+
+local function WarnIfCombatLogDisabled(force)
+  if not GroupCheckDB.enabled or not GroupCheckDB.checkCombatLog then
+    return
+  end
+
+  local isMythicDungeon, instanceMapID = IsInMythicDungeon()
+
+  if not isMythicDungeon then
+    warnedCombatLogForInstance = nil
+    return
+  end
+
+  if not force and warnedCombatLogForInstance == instanceMapID then
+    return
+  end
+
+  if not LoggingCombat() then
+    PrintLocal("Combatlog ist nicht aktiv. Bitte aktiviere es mit /combatlog")
+    RaidNotice_AddMessage(
+      RaidWarningFrame,
+      "GroupCheck: Combatlog ist nicht aktiv!",
+      ChatTypeInfo["RAID_WARNING"]
+    )
+  end
+
+  warnedCombatLogForInstance = instanceMapID
 end
 
 local function PostSummary(mode)
@@ -370,6 +414,7 @@ local function RegisterSettingsPanel()
   CreateCheckbox(panel, "Check HT", "Shows 'Available Bloodlust' only when Bloodlust is present. Missing Bloodlust is reported via warning.", "checkHT", y); y = y - 28
   CreateCheckbox(panel, "Check Class stacking", "Includes 'Class stacking: {yes: ... / no}'.", "checkStacking", y); y = y - 28
   CreateCheckbox(panel, "Show suggestions", "Shows local suggestions for missing Bloodlust/BattleRes while building the group.", "showSuggestions", y); y = y - 28
+  CreateCheckbox(panel, "Check combat log in Mythic", "Warns when entering a Mythic dungeon and combat logging is disabled.", "checkCombatLog", y); y = y - 28
 
   local hint = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
   hint:SetPoint("TOPLEFT", 16, y - 8)
@@ -383,11 +428,28 @@ end
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("GROUP_ROSTER_UPDATE")
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
+f:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+f:RegisterEvent("CHALLENGE_MODE_START")
 
 f:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON then
     ApplyDefaults()
     RegisterSettingsPanel()
+    return
+  end
+
+  if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
+    C_Timer.After(2, function()
+      WarnIfCombatLogDisabled(false)
+      CheckRosterAndMaybePost()
+    end)
+    return
+  end
+
+  if event == "CHALLENGE_MODE_START" then
+    C_Timer.After(1, function()
+      WarnIfCombatLogDisabled(true)
+    end)
     return
   end
 
@@ -414,3 +476,101 @@ SlashCmdList["GROUPCHECK"] = function(msg)
 
   PrintLocal("commands: /gc check, /gc config")
 end
+
+local specCache = {}
+local pendingGUID = nil
+
+local inspectFrame = CreateFrame("Frame")
+
+inspectFrame:RegisterEvent("INSPECT_READY")
+
+inspectFrame:SetScript("OnEvent", function(_, event, guid)
+    if event ~= "INSPECT_READY" then
+        return
+    end
+
+    if guid ~= pendingGUID then
+        return
+    end
+
+    local _, unit = GameTooltip:GetUnit()
+
+    if not unit or not UnitExists(unit) then
+        return
+    end
+
+    local specID = GetInspectSpecialization(unit)
+
+    if specID and specID > 0 then
+        specCache[guid] = specID
+    end
+
+    ClearInspectPlayer()
+
+    pendingGUID = nil
+
+    -- Tooltip sofort neu aufbauen
+    GameTooltip:SetUnit(unit)
+end)
+
+local function AddGroupCheckTooltip(tooltip)
+    local _, unit = tooltip:GetUnit()
+
+    if not unit or not UnitExists(unit) then
+        return
+    end
+
+    local guid = UnitGUID(unit)
+
+    if not guid then
+        return
+    end
+
+    local specID
+
+    -- Eigener Spieler
+    if UnitIsUnit(unit, "player") then
+        local currentSpec = GetSpecialization()
+
+        if currentSpec then
+            specID = GetSpecializationInfo(currentSpec)
+        end
+    else
+        specID = specCache[guid]
+
+        -- Spec noch nicht bekannt
+        if not specID and CanInspect(unit) then
+            pendingGUID = guid
+            NotifyInspect(unit)
+            return
+        end
+    end
+
+    if not specID then
+        return
+    end
+
+    local rank = SpecTierlist[specID]
+
+    if not rank then
+        return
+    end
+
+    local color = RankColors[rank] or "ffffffff"
+
+    tooltip:AddLine(" ")
+    tooltip:AddLine("|cffFFFFFFGroupCheck|r")
+
+    tooltip:AddLine(
+        string.format(
+            "M+ Ranking: |c%s%s|r",
+            color,
+            rank
+        )
+    )
+end
+
+TooltipDataProcessor.AddTooltipPostCall(
+    Enum.TooltipDataType.Unit,
+    AddGroupCheckTooltip
+)
